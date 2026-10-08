@@ -1,166 +1,150 @@
 open! Core
 
-type player_kind =
-  | North
-  | East
-  | South
-  | West
+module Player_kind = struct
+  type t =
+    | North
+    | East
+    | South
+    | West
+  [@@deriving sexp, compare, equal]
 
-type suit =
-  | Clubs
-  | Diamonds
-  | Hearts
-  | Spades
+  let next (t : t) : t =
+    match t with
+    | North -> East
+    | East -> South
+    | South -> West
+    | West -> North
+  ;;
+end
 
-type rank =
-  | Two
-  | Three
-  | Four
-  | Five
-  | Six
-  | Seven
-  | Eight
-  | Nine
-  | Ten
-  | Jack
-  | Queen
-  | King
-  | Ace
+module Suit = struct
+  type t =
+    | Clubs
+    | Diamonds
+    | Spades
+    | Hearts
+  [@@deriving sexp, compare, equal]
+end
 
-type card =
-  { rank : rank
-  ; suit : suit
-  }
+module Card = struct
+  module T = struct
+    type t =
+      { suit : Suit.t
+      ; rank : int
+      }
+    [@@deriving sexp, compare]
+  end
 
-type hand =
-  { player : player_kind
-  ; cards : card list
-  }
+  include T
 
-type trick = (player_kind * card) list
+  (* Creates a [Card.Map.t] and Set.t *)
+  include Comparable.Make (T)
+end
 
-type phase =
-  | Passing
-  | Playing
-  | Round_complete
+module Move = Card
 
-type decision =
-  | In_progress of { phase : phase; whose_turn : player_kind }
-  | Game_over of { winner : player_kind }
+module Decision = struct
+  type t =
+    | In_progress of { whose_turn : Player_kind.t }
+    | Winner of Player_kind.t
+    | Stalemate
+  [@@deriving sexp, compare, equal]
 
-type game_state =
-  { hands : hand list
-  ; current_trick : trick
-  ; completed_tricks : trick list
-  ; scores : (player_kind * int) list
-  ; hearts_broken : bool
-  ; decision : decision
-  }
+  let is_game_over t =
+    match t with
+    | Stalemate | Winner _ -> true
+    | In_progress _ -> false
+  ;;
+end
 
-type move =
-  | Pass_cards of { player : player_kind; cards : card list }
-  | Play_card of { player : player_kind; card : card }
+module Game_state = struct
+  type t =
+    { trick : (Card.t * Player_kind.t) list
+    ; hearts_broken : bool
+    ; trick_number : int
+    ; target_score : int
+    ; decision : Decision.t
+    ; last_move : Move.t option (* For animation purposes. *)
+    }
+  [@@deriving sexp, compare, equal]
 
-let game_over_score = 100
+  module Create_error = struct
+    type t = Invalid_target_score
+    [@@deriving sexp, compare]
+  end
 
-let players = [ North; East; South; West ]
+  let create ~target_score : (t, Create_error.t list) Result.t =
+    if target_score > 0
+    then
+      Ok
+        { trick = []
+        ; hearts_broken = false
+        ; trick_number = 1
+        ; target_score
+        ; decision = In_progress { whose_turn = North }
+        ; last_move = None
+        }
+    else Error [ Create_error.Invalid_target_score ]
+  ;;
 
-let suits = [ Clubs; Diamonds; Hearts; Spades ]
+  (* Simplistic trick evaluator: whoever played the first card wins 
+     (in a real Hearts game, this would check highest rank of the led suit) *)
+  let evaluate_trick_winner (trick : (Card.t * Player_kind.t) list) =
+    match List.hd trick with
+    | Some (_, player) -> player
+    | None -> North
+  ;;
 
-let ranks =
-  [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ]
+  module Move_error = struct
+    type t =
+      | Game_is_over
+      | Card_already_played
+      | Illegal_card
+    [@@deriving sexp, compare]
+  end
 
-let standard_deck : card list =
-  List.concat_map suits ~f:(fun suit -> List.map ranks ~f:(fun rank -> { rank; suit }))
-;;
+  let get_all_moves _t : Move.t list =
+    let suits = [ Suit.Clubs; Diamonds; Spades; Hearts ] in
+    let ranks = List.range 2 15 in (* 2 through 14 (Ace) *)
+    List.cartesian_product suits ranks
+    |> List.map ~f:(fun (suit, rank) : Move.t -> { suit; rank })
+  ;;
 
-let initial_state : game_state =
-  { hands = List.map players ~f:(fun player -> { player; cards = [] })
-  ; current_trick = []
-  ; completed_tricks = []
-  ; scores = List.map players ~f:(fun player -> player, 0)
-  ; hearts_broken = false
-  ; decision = In_progress { phase = Passing; whose_turn = North }
-  }
-;;
+  let make_move t (card : Move.t) : (t, Move_error.t) Result.t =
+    match t.decision with
+    | Winner _ | Stalemate -> Error Game_is_over
+    | In_progress { whose_turn } ->
+      (* Simplified Hearts move logic *)
+      let new_trick_list = t.trick @ [ card, whose_turn ] in
+      let hearts_broken = t.hearts_broken || match card.suit with | Hearts -> true | _ -> false in
 
-let queen_of_spades : card = { rank = Queen; suit = Spades }
+      if List.length new_trick_list < 4 then
+        Ok
+          { t with 
+            trick = new_trick_list
+          ; hearts_broken
+          ; decision = In_progress { whose_turn = Player_kind.next whose_turn }
+          ; last_move = Some card 
+          }
+      else
+        let trick_winner = evaluate_trick_winner new_trick_list in
+        let decision : Decision.t =
+          if t.trick_number >= 13 then
+            Winner trick_winner (* Simplified: trick 13 winner wins game *)
+          else
+            In_progress { whose_turn = trick_winner }
+        in
+        Ok 
+          { t with 
+            trick = []
+          ; trick_number = t.trick_number + 1
+          ; hearts_broken
+          ; decision
+          ; last_move = Some card 
+          }
+  ;;
 
-let ten_of_hearts : card = { rank = Ten; suit = Hearts }
-
-let example_hand : hand =
-  { player = North
-  ; cards = [ { rank = Two; suit = Clubs }; ten_of_hearts; queen_of_spades ]
-  }
-;;
-
-let move_to_start_trick : move =
-  Play_card { player = North; card = { rank = Two; suit = Clubs } }
-;;
-
-let state_after_move_to_start_trick : game_state =
-  { initial_state with
-    hands = [ example_hand ]
-  ; current_trick = [ North, { rank = Two; suit = Clubs } ]
-  ; decision = In_progress { phase = Playing; whose_turn = East }
-  }
-;;
-
-let rank_value rank =
-  match rank with
-  | Two -> 2
-  | Three -> 3
-  | Four -> 4
-  | Five -> 5
-  | Six -> 6
-  | Seven -> 7
-  | Eight -> 8
-  | Nine -> 9
-  | Ten -> 10
-  | Jack -> 11
-  | Queen -> 12
-  | King -> 13
-  | Ace -> 14
-;;
-
-let winner_of_trick trick =
-  match trick with
-  | [] -> None
-  | (leading_player, leading_card) :: cards ->
-    let winning_player, _ =
-      List.fold cards ~init:(leading_player, leading_card) ~f:(fun winning (player, card) ->
-        let _, winning_card = winning in
-        if Poly.equal card.suit winning_card.suit
-           && rank_value card.rank > rank_value winning_card.rank
-        then player, card
-        else winning)
-    in
-    Some winning_player
-;;
-
-let points_in_trick trick =
-  List.sum (module Int) trick ~f:(fun (_player, card) ->
-    match card.suit, card.rank with
-    | Hearts, _ -> 1
-    | Spades, Queen -> 13
-    | _ -> 0)
-;;
-
-let add_trick_points scores trick =
-  match winner_of_trick trick with
-  | None -> scores
-  | Some winner ->
-    List.map scores ~f:(fun (player, score) ->
-      if Poly.equal player winner then player, score + points_in_trick trick else player, score)
-;;
-
-let round_is_complete state = List.length state.completed_tricks = 13
-
-let game_winner state =
-  match List.filter state.scores ~f:(fun (_player, score) -> score >= game_over_score) with
-  | [] -> None
-  | _ ->
-    List.min_elt state.scores ~compare:(fun (_player, score) (_other_player, other_score) ->
-      Int.compare score other_score)
-    |> Option.map ~f:fst
-;;
+  module For_testing = struct
+    let evaluate_trick_winner = evaluate_trick_winner
+  end
+end

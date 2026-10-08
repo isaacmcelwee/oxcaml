@@ -1,81 +1,81 @@
 open! Core
 
-type player_kind =
-  | North
-  | East
-  | South
-  | West
+module Player_kind : sig
+  type t =
+    | North
+    | East
+    | South
+    | West
+  [@@deriving sexp, compare, equal]
 
-type suit =
-  | Clubs
-  | Diamonds
-  | Hearts
-  | Spades
+  val next : t -> t
+end
 
-type rank =
-  | Two
-  | Three
-  | Four
-  | Five
-  | Six
-  | Seven
-  | Eight
-  | Nine
-  | Ten
-  | Jack
-  | Queen
-  | King
-  | Ace
+module Suit : sig
+  type t =
+    | Clubs
+    | Diamonds
+    | Spades
+    | Hearts
+  [@@deriving sexp, compare, equal]
+end
 
-type card =
-  { rank : rank
-  ; suit : suit
-  }
+module Card : sig
+  type t =
+    { suit : Suit.t
+    ; rank : int
+    }
+  [@@deriving sexp, compare]
 
-type hand =
-  { player : player_kind
-  ; cards : card list
-  }
+  (* Defines a [Card.Map.t]. *)
+  include Comparable.S with type t := t
+end
 
-type trick = (player_kind * card) list
+module Move : module type of Card
 
-type phase =
-  | Passing
-  | Playing
-  | Round_complete
+module Decision : sig
+  type t =
+    | In_progress of { whose_turn : Player_kind.t }
+    | Winner of Player_kind.t
+    | Stalemate
+  [@@deriving sexp, compare, equal]
 
-type decision =
-  | In_progress of { phase : phase; whose_turn : player_kind }
-  | Game_over of { winner : player_kind }
+  val is_game_over : t -> bool
+end
 
-type game_state =
-  { hands : hand list
-  ; current_trick : trick
-  ; completed_tricks : trick list
-  ; scores : (player_kind * int) list
-  ; hearts_broken : bool
-  ; decision : decision
-  }
+module Game_state : sig
+  type t =
+    { trick : (Card.t * Player_kind.t) list
+    ; hearts_broken : bool
+    ; trick_number : int
+    ; target_score : int
+    ; decision : Decision.t
+    ; last_move : Move.t option (* For animation purposes. *)
+    }
+  [@@deriving sexp, compare, equal]
 
-type move =
-  | Pass_cards of { player : player_kind; cards : card list }
-  | Play_card of { player : player_kind; card : card }
+  module Create_error : sig
+    type t = 
+      | Invalid_target_score
+    [@@deriving sexp, compare]
+  end
 
-val game_over_score : int
+  val create
+    :  target_score:int
+    -> (t, Create_error.t list) Result.t
 
-val players : player_kind list
-val suits : suit list
-val ranks : rank list
-val standard_deck : card list
-val initial_state : game_state
-val queen_of_spades : card
-val ten_of_hearts : card
-val example_hand : hand
-val move_to_start_trick : move
-val state_after_move_to_start_trick : game_state
-val rank_value : rank -> int
-val winner_of_trick : trick -> player_kind option
-val points_in_trick : trick -> int
-val add_trick_points : (player_kind * int) list -> trick -> (player_kind * int) list
-val round_is_complete : game_state -> bool
-val game_winner : game_state -> player_kind option
+  module Move_error : sig
+    type t =
+      | Game_is_over
+      | Card_already_played
+      | Illegal_card
+    [@@deriving sexp, compare]
+  end
+
+  val get_all_moves : t -> Move.t list
+  val make_move : t -> Move.t -> (t, Move_error.t) Result.t
+
+  module For_testing : sig
+    val evaluate_trick_winner : (Card.t * Player_kind.t) list -> Player_kind.t
+  end
+end
