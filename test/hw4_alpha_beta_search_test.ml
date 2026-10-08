@@ -1,35 +1,49 @@
 open! Core
-open Tictactoe_logic_library
-open Hw2_tictactoe_logic
-open Hw4_alpha_beta_search
-open Hw3_tictactoe_logic_test
+open Hearts_logic_library.Hw2_hearts_logic
+open Hearts_logic_library.Hw4_alpha_beta_search
 
-type player_kind_or_empty =
-  | E
-  | O
-  | X
+let ok_exn result = Result.ok result |> Option.value_exn
 
-let print_computer_move (board_as_lists : player_kind_or_empty list list) max_depth =
-  let board : Player_kind.t Cell_position.Map.t =
-    List.mapi board_as_lists ~f:(fun row row_as_list ->
-      List.filter_mapi row_as_list ~f:(fun col player_kind_or_empty ->
-        let player_kind : Player_kind.t option =
-          match player_kind_or_empty with
-          | E -> None
-          | O -> Some O
-          | X -> Some X
-        in
-        Option.map player_kind ~f:(fun player_kind : (Cell_position.t * Player_kind.t) ->
-          { row; column = col }, player_kind)))
-    |> List.concat
-    |> Cell_position.Map.of_alist_exn
+let pretty_print_state (state : Game_state.t) =
+  let trick = state.trick in
+  let trick_number = state.trick_number in
+  let hearts_broken = state.hearts_broken in
+  let decision = state.decision in
+  print_endline (sprintf "Trick: %d | Hearts broken: %b" trick_number hearts_broken);
+  List.iter trick ~f:(fun (card, player) ->
+    let player_str = Player_kind.sexp_of_t player |> Sexp.to_string in
+    let suit_str = Suit.sexp_of_t card.suit |> Sexp.to_string in
+    printf "%s played %s %d\n" player_str suit_str card.rank);
+  print_s [%sexp (decision : Decision.t)]
+;;
+
+let print_computer_move (trick_cards : (Suit.t * int) list) max_depth =
+  let trick =
+    List.mapi trick_cards ~f:(fun i (suit, rank) ->
+      let player =
+        match i with
+        | 0 -> Player_kind.North
+        | 1 -> Player_kind.East
+        | 2 -> Player_kind.South
+        | 3 -> Player_kind.West
+        | _ -> failwith "Trick full"
+      in
+      ({ Card.suit; rank }, player)
+    )
   in
-  let whose_turn : Player_kind.t = if Map.length board mod 2 = 0 then X else O in
+  let whose_turn =
+    match List.length trick_cards with
+    | 0 -> Player_kind.North
+    | 1 -> Player_kind.East
+    | 2 -> Player_kind.South
+    | 3 -> Player_kind.West
+    | _ -> failwith "Trick full"
+  in
   let state : Game_state.t =
-    { board
-    ; rows = 3
-    ; columns = 3
-    ; winning_sequence_length = 3
+    { trick
+    ; hearts_broken = false
+    ; trick_number = 13 (* Trick 13 ends the game in our simplified engine *)
+    ; target_score = 100
     ; decision = In_progress { whose_turn }
     ; last_move = None
     }
@@ -38,295 +52,25 @@ let print_computer_move (board_as_lists : player_kind_or_empty list list) max_de
   let next_state = Game_state.make_move state move |> ok_exn in
   print_s [%message "Computer chooses this move" (move : Move.t)];
   print_endline "\nThis transitions the game from this state:";
-  pretty_print_board state;
+  pretty_print_state state;
   print_endline "\nTo this state:";
-  pretty_print_board next_state
+  pretty_print_state next_state
 ;;
 
-let%expect_test "returns exactly one cell" =
-  print_computer_move [ [ O; O; X ]; [ X; X; O ]; [ O; X; E ] ] 1;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 2) (column 2))))
+(* Note: Run `dune promote` to automatically populate the [%expect] blocks 
+   with the output from your simplified engine. *)
 
-    This transitions the game from this state:
-    O|O|X
-    -----
-    X|X|O
-    -----
-    O|X|
-    (In_progress (whose_turn X))
-
-    To this state:
-    O|O|X
-    -----
-    X|X|O
-    -----
-    O|X|X
-    Stalemate
-    |}]
+let%expect_test "Computer plays first card of the trick" =
+  print_computer_move [] 1;
+  [%expect {| |}]
 ;;
 
-let%expect_test "X finds an immediate winning move" =
-  print_computer_move [ [ E; E; O ]; [ O; X; X ]; [ E; X; O ] ] 1;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 0) (column 1))))
-
-    This transitions the game from this state:
-     | |O
-    -----
-    O|X|X
-    -----
-     |X|O
-    (In_progress (whose_turn X))
-
-    To this state:
-     |X|O
-    -----
-    O|X|X
-    -----
-     |X|O
-    (Winner X)
-    |}]
+let%expect_test "Computer responds to the first card played" =
+  print_computer_move [ (Suit.Clubs, 2) ] 1;
+  [%expect {| |}]
 ;;
 
-let%expect_test "O finds an immediate winning move" =
-  print_computer_move [ [ E; E; O ]; [ O; X; X ]; [ O; X; O ] ] 1;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 0) (column 0))))
-
-    This transitions the game from this state:
-     | |O
-    -----
-    O|X|X
-    -----
-    O|X|O
-    (In_progress (whose_turn O))
-
-    To this state:
-    O| |O
-    -----
-    O|X|X
-    -----
-    O|X|O
-    (Winner O)
-    |}]
-;;
-
-let%expect_test "X prevents an immediate win" =
-  print_computer_move [ [ X; E; E ]; [ O; O; E ]; [ X; E; E ] ] 2;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 1) (column 2))))
-
-    This transitions the game from this state:
-    X| |
-    -----
-    O|O|
-    -----
-    X| |
-    (In_progress (whose_turn X))
-
-    To this state:
-    X| |
-    -----
-    O|O|X
-    -----
-    X| |
-    (In_progress (whose_turn O))
-    |}]
-;;
-
-let%expect_test "O prevents an immediate win" =
-  print_computer_move [ [ X; X; E ]; [ O; E; E ]; [ E; E; E ] ] 2;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 0) (column 2))))
-
-    This transitions the game from this state:
-    X|X|
-    -----
-    O| |
-    -----
-     | |
-    (In_progress (whose_turn O))
-
-    To this state:
-    X|X|O
-    -----
-    O| |
-    -----
-     | |
-    (In_progress (whose_turn X))
-    |}]
-;;
-
-let%expect_test "O prevents another immediate win" =
-  print_computer_move [ [ X; O; E ]; [ X; O; E ]; [ E; X; E ] ] 2;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 2) (column 0))))
-
-    This transitions the game from this state:
-    X|O|
-    -----
-    X|O|
-    -----
-     |X|
-    (In_progress (whose_turn O))
-
-    To this state:
-    X|O|
-    -----
-    X|O|
-    -----
-    O|X|
-    (In_progress (whose_turn X))
-    |}]
-;;
-
-let%expect_test "X finds a winning move that will lead to winning in 2 steps" =
-  print_computer_move [ [ X; E; E ]; [ O; X; E ]; [ E; E; O ] ] 3;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 0) (column 1))))
-
-    This transitions the game from this state:
-    X| |
-    -----
-    O|X|
-    -----
-     | |O
-    (In_progress (whose_turn X))
-
-    To this state:
-    X|X|
-    -----
-    O|X|
-    -----
-     | |O
-    (In_progress (whose_turn O))
-    |}]
-;;
-
-let%expect_test "O finds a winning move that will lead to winning in 2 steps" =
-  print_computer_move [ [ E; X; E ]; [ X; X; O ]; [ E; O; E ] ] 3;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 2) (column 2))))
-
-    This transitions the game from this state:
-     |X|
-    -----
-    X|X|O
-    -----
-     |O|
-    (In_progress (whose_turn O))
-
-    To this state:
-     |X|
-    -----
-    X|X|O
-    -----
-     |O|O
-    (In_progress (whose_turn X))
-    |}]
-;;
-
-let%expect_test "O finds a cool winning move that will lead to winning in 2 steps" =
-  print_computer_move [ [ X; O; X ]; [ X; E; E ]; [ O; E; E ] ] 3;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 2) (column 1))))
-
-    This transitions the game from this state:
-    X|O|X
-    -----
-    X| |
-    -----
-    O| |
-    (In_progress (whose_turn O))
-
-    To this state:
-    X|O|X
-    -----
-    X| |
-    -----
-    O|O|
-    (In_progress (whose_turn X))
-    |}]
-;;
-
-let%expect_test "O finds the wrong move due to small depth" =
-  print_computer_move [ [ X; E; E ]; [ E; E; E ]; [ E; E; E ] ] 3;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 0) (column 1))))
-
-    This transitions the game from this state:
-    X| |
-    -----
-     | |
-    -----
-     | |
-    (In_progress (whose_turn O))
-
-    To this state:
-    X|O|
-    -----
-     | |
-    -----
-     | |
-    (In_progress (whose_turn X))
-    |}]
-;;
-
-let%expect_test "O finds the correct move when depth is big enough" =
-  print_computer_move [ [ X; E; E ]; [ E; E; E ]; [ E; E; E ] ] 6;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 1) (column 1))))
-
-    This transitions the game from this state:
-    X| |
-    -----
-     | |
-    -----
-     | |
-    (In_progress (whose_turn O))
-
-    To this state:
-    X| |
-    -----
-     |O|
-    -----
-     | |
-    (In_progress (whose_turn X))
-    |}]
-;;
-
-let%expect_test "X finds a winning move that will lead to winning in 2 steps" =
-  print_computer_move [ [ E; E; E ]; [ O; X; E ]; [ E; E; E ] ] 5;
-  [%expect
-    {|
-    ("Computer chooses this move" (move ((row 0) (column 0))))
-
-    This transitions the game from this state:
-     | |
-    -----
-    O|X|
-    -----
-     | |
-    (In_progress (whose_turn X))
-
-    To this state:
-    X| |
-    -----
-    O|X|
-    -----
-     | |
-    (In_progress (whose_turn O))
-    |}]
+let%expect_test "Computer plays the final card of the trick and resolves the game" =
+  print_computer_move [ (Suit.Clubs, 2); (Suit.Clubs, 5); (Suit.Clubs, 14) ] 1;
+  [%expect {| |}]
 ;;
